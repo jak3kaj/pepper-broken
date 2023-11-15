@@ -19,26 +19,12 @@ from pepper.exceptions import PepperException
 # Import Pepper Libraries
 
 
-try:
-    # Python 3
+if sys.version_info[0] == 3:
     from configparser import ConfigParser, RawConfigParser
-except ImportError:
-    # Python 2
+    JSONDecodeError = json.JSONDecodeError
+elif sys.version_info[0] == 2:
     from ConfigParser import ConfigParser, RawConfigParser
-
-try:
-    # Python 3
-    JSONDecodeError = json.decode.JSONDecodeError
-except AttributeError:
-    # Python 2
     JSONDecodeError = ValueError
-
-try:
-    input = raw_input
-except NameError:
-    pass
-
-if sys.version_info[0] == 2:
     FileNotFoundError = IOError
 
 logger = logging.getLogger(__name__)
@@ -165,6 +151,47 @@ class PepperCli:
                 recommended to resolve certificate errors for production.
             """
             ),
+
+        self.parser.add_option(
+            '--ca-bundle',
+            dest='ca_bundle',
+            default=None,
+            help=textwrap.dedent('''
+                The path to a file of concatenated CA certificates in PEM
+                format, or a directory of such files.
+            '''
+            ),
+        )
+
+        self.parser.add_option(
+            '--client-cert',
+            dest='client_cert',
+            default=None,
+            help=textwrap.dedent('''
+                Client side certificate to send with requests. Should be a path
+                to a single file in PEM format containing the certificate
+                as well as any number of CA certificates needed to establish
+                the certificate’s authenticity.
+
+                If `--client-cert-key` is not given, this file must also contain
+                the private key of the client certificate.
+            '''
+            ),
+        )
+
+        self.parser.add_option(
+            '--client-cert-key',
+            dest='client_cert_key',
+            default=None,
+            help=textwrap.dedent('''
+                Private key for the client side certificate given in
+                `--client-cert`.
+
+                If `--client-cert` is given but this argument is not, then the
+                client cert file given with `--client-cert` must contain the
+                private key.
+            '''
+            ),
         )
 
         self.options, self.args = self.parser.parse_args()
@@ -174,6 +201,9 @@ class PepperCli:
         if len(toggled_options) > 1:
             s = repr(toggled_options).strip("[]")
             self.parser.error("Options %s are mutually exclusive" % s)
+
+        if self.options.client_cert_key and not self.options.client_cert:
+            self.parser.error("'--client-cert-key' given without '--client-cert'")
 
     def add_globalopts(self):
         """
@@ -518,6 +548,10 @@ class PepperCli:
             "SALTAPI_USER": None,
             "SALTAPI_PASS": None,
             "SALTAPI_EAUTH": "auto",
+
+            "SALTAPI_CA_BUNDLE": None,
+            "SALTAPI_CLIENT_CERT": None,
+            "SALTAPI_CLIENT_CERT_KEY": None,
         }
 
         try:
@@ -565,7 +599,17 @@ class PepperCli:
             if self.options.password is not None:
                 results["SALTAPI_PASS"] = self.options.password
 
-        return results
+        if results['SALTAPI_EAUTH'] == 'kerberos':
+            ret['password'] = None
+
+        ret['eauth'] = self.options.eauth or results.get('SALTAPI_EAUTH')
+        ret['token_expire'] = self.options.token_expire or results.get('SALTAPI_TOKEN_EXPIRE')
+        ret['token_expire'] = ret['token_expire'] and int(ret['token_expire'])
+        ret['ca_bundle'] = self.options.ca_bundle or results.get('SALTAPI_CA_BUNDLE')
+        ret['client_cert'] = self.options.client_cert or results.get('SALTAPI_CLIENT_CERT')
+        ret['client_cert_key'] = self.options.client_cert_key or results.get('SALTAPI_CLIENT_CERT_KEY')
+
+        return ret
 
     def parse_url(self):
         """
@@ -752,7 +796,7 @@ class PepperCli:
         if failed:
             yield exit_code, [{"Failed": failed}]
 
-    def login(self, api):
+    def login(self, api, login_details):
         login = api.token if self.options.userun else api.login
 
         if self.options.mktoken:
@@ -768,7 +812,8 @@ class PepperCli:
                     logger.error("Unable to load login token from {} {}".format(token_file, str(e)))
                     if os.path.isfile(token_file):
                         os.remove(token_file)
-                auth = login(**self.parse_login())
+                auth = login(**login_details)
+
                 try:
                     oldumask = os.umask(0)
                     fdsc = os.open(token_file, os.O_WRONLY | os.O_CREAT, 0o600)
@@ -779,7 +824,7 @@ class PepperCli:
                 finally:
                     os.umask(oldumask)
         else:
-            auth = login(**self.parse_login())
+            auth = login(**login_details)
 
         api.auth = auth
         self.auth = auth
@@ -810,13 +855,18 @@ class PepperCli:
         rootLogger.addHandler(logging.StreamHandler())
         rootLogger.setLevel(max(logging.ERROR - (self.options.verbose * 10), 1))
 
+        login_details = self.get_login_details()
+
         api = pepper.Pepper(
             self.parse_url(),
             debug_http=self.options.debug_http,
             ignore_ssl_errors=self.options.ignore_ssl_certificate_errors,
+            ca_bundle=login_details.get("ca_bundle"),
+            client_cert=login_details.get("client_cert"),
+            client_cert_key=login_details.get("client_cert_key"),
         )
 
-        self.login(api)
+        self.login(api, login_details)
 
         load = self.parse_cmd(api)
 
