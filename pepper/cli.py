@@ -105,6 +105,17 @@ class PepperCli:
         )
 
         self.parser.add_option(
+            "--output-force-color",
+            dest="output_force_color",
+            default=False,
+            action="store_true",
+            help=textwrap.dedent(
+                """
+                Force salt outputter to use color when printing.
+            """)
+        )
+
+        self.parser.add_option(
             "--output-file",
             dest="output_file",
             default=None,

@@ -29,6 +29,8 @@ class Pepper:
         self.cli = PepperCli()
         if HAS_SALT:
             self.opts = salt.config.client_config(self.cli.options.master)
+            if self.cli.options.output_force_color:
+                self.opts['color'] = True
         else:
             self.opts = {}
         if self.cli.options.output_file is not None:
